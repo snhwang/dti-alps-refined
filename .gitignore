@@ -1,0 +1,35 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Server data — uploaded sessions and intermediate output
+data/
+output/
+sessions/
+viewer_cache/
+
+# Frontend build artifacts and node modules
+web_ui/dist/
+web_ui/node_modules/
+web_ui/.vite/
+
+# Editor / OS
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# Replit
+.upm/
+.config/
+.cache/
+poetry.lock
+dti_output/
