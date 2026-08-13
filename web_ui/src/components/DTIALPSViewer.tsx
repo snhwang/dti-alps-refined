@@ -48,6 +48,44 @@ const PEN_VALUE_PROJ = 1;  // Blue - SCR/Projection fibers
 const PEN_VALUE_ASSOC = 2; // Green - SLF/Association fibers
 const PEN_VALUE_ERASE = 0; // Erase
 
+
+// Copy a mask into NiiVue's draw bitmap, honouring display orientation.
+//
+// The draw bitmap is in display coordinates. When the volume has a negative x
+// scale (permRAS[0] < 0) display x runs opposite to storage x, so the mask has
+// to be mirrored on the way in. Copying it directly puts every region on the
+// wrong side of the brain, which is silent: the counts are right and only the
+// picture is wrong. Both callers use this so they cannot drift apart.
+function copyMaskIntoBitmap(
+    nv: any,
+    maskData: ArrayLike<number>,
+    dims: [number, number, number],
+): void {
+    const bitmap = nv.drawBitmap;
+    if (!bitmap || bitmap.length !== maskData.length) {
+        throw new Error(
+            `Bitmap size mismatch: bitmap=${bitmap?.length}, mask=${maskData.length}`,
+        );
+    }
+    const [dim1, dim2, dim3] = dims;
+    const vol = nv.volumes?.[0] as any;
+    const xFlipped = !!(vol && vol.permRAS && vol.permRAS[0] < 0);
+    if (!xFlipped) {
+        for (let i = 0; i < maskData.length; i++) bitmap[i] = maskData[i];
+        return;
+    }
+    const sliceSize = dim1 * dim2;
+    for (let z = 0; z < dim3; z++) {
+        const zOffset = z * sliceSize;
+        for (let y = 0; y < dim2; y++) {
+            const rowOffset = zOffset + y * dim1;
+            for (let x = 0; x < dim1; x++) {
+                bitmap[rowOffset + (dim1 - 1 - x)] = maskData[rowOffset + x];
+            }
+        }
+    }
+}
+
 const DTIALPSViewer: FC<DTIALPSViewerProps> = ({ session, onClose }) => {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -714,10 +752,13 @@ const DTIALPSViewer: FC<DTIALPSViewerProps> = ({ session, onClose }) => {
                         console.log('Bitmap length:', bitmap?.length, 'Mask data length:', roiData.mask_data.length);
 
                         if (bitmap && bitmap.length === roiData.mask_data.length) {
-                            // Copy data into existing bitmap (don't replace the array)
-                            for (let i = 0; i < roiData.mask_data.length; i++) {
-                                bitmap[i] = roiData.mask_data[i];
-                            }
+                            // Mirror X where the volume needs it; a direct copy
+                            // draws every region on the wrong side.
+                            copyMaskIntoBitmap(
+                                nv as any,
+                                roiData.mask_data,
+                                [roiData.dims[0], roiData.dims[1], roiData.dims[2]],
+                            );
                             // Refresh the NiiVue display
                             console.log('Refreshing NiiVue display...');
                             nv.refreshDrawing(true);
@@ -889,29 +930,8 @@ const DTIALPSViewer: FC<DTIALPSViewerProps> = ({ session, onClose }) => {
             }
             console.log(`Mask loaded: ${dim1}x${dim2}x${dim3}, proj=${maskProjCount}, assoc=${maskAssocCount}`);
 
-            // Clear existing drawing and apply mask with X-flip for permRAS
-            // NiiVue's drawBitmap uses display coordinates, which have X flipped due to permRAS
             console.time('applyMask');
-            const nvVol2 = nv.volumes[0] as any;
-            const xFlipped = nvVol2.permRAS && nvVol2.permRAS[0] < 0;
-            console.log(`X-flipped: ${xFlipped}`);
-
-            if (xFlipped) {
-                // Need to flip X axis - process row by row for efficiency
-                const sliceSize = dim1 * dim2;
-                for (let z = 0; z < dim3; z++) {
-                    const zOffset = z * sliceSize;
-                    for (let y = 0; y < dim2; y++) {
-                        const rowOffset = zOffset + y * dim1;
-                        for (let x = 0; x < dim1; x++) {
-                            bitmap[rowOffset + (dim1 - 1 - x)] = maskData[rowOffset + x];
-                        }
-                    }
-                }
-            } else {
-                // No flip needed - direct copy
-                bitmap.set(maskData);
-            }
+            copyMaskIntoBitmap(nv as any, maskData, [dim1, dim2, dim3]);
             console.timeEnd('applyMask');
 
             // Refresh the drawing - use requestAnimationFrame to avoid blocking
