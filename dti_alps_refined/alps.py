@@ -18,6 +18,11 @@ Variants
   voxelwise   The perpendicular directions are chosen in each voxel to maximise
               and minimise the diffusivity, which makes the index exactly
               lambda2 / lambda3. No axis is estimated.
+  anatomical  Tract directions measured as above, with the perivascular axis
+              taken as R' x from a subject-to-template rotation, so it is the
+              same axis in both hemispheres rather than perpendicular to each
+              hemisphere's own pair of tracts. The only variant needing a
+              registration; NaN unless template_rotation is given.
   alps_pas    Principal axis sorting (Ajouz et al. 2025), reported for
               comparison. Not rotation-invariant: it selects the eigenvector by
               its scanner-x component, so it is invariant about x alone.
@@ -141,6 +146,40 @@ def _region(lam, vec, mask):
             "v1": vec[mask][:, :, 0], "v2": vec[mask][:, :, 1]}
 
 
+def _template_axis(rotation: np.ndarray) -> np.ndarray:
+    """Anatomical left-right expressed in the subject's own frame.
+
+    rotation is the rotation part of a subject-to-template affine, recovered by
+    polar decomposition, so its transpose carries template x back into native
+    space. Sign is fixed only for readability; the axis is unsigned.
+    """
+    R = np.asarray(rotation, float)
+    if R.shape != (3, 3):
+        raise ValueError("template_rotation must be the 3x3 rotation of the affine")
+    p = R.T @ X
+    n = np.linalg.norm(p)
+    if n < 1e-12:
+        return X
+    p = p / n
+    return -p if p[0] < 0 else p
+
+
+def polar_rotation(linear: np.ndarray) -> np.ndarray:
+    """Nearest rotation to a 3x3 linear map, by polar decomposition.
+
+    An affine carries scale and shear as well as rotation. Only the rotation is
+    wanted here, and taking it this way is what makes the recovered axis
+    insensitive to how much the registration had to stretch the brain.
+    """
+    U, _, Vt = np.linalg.svd(np.asarray(linear, float))
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        U = U.copy()
+        U[:, -1] *= -1
+        R = U @ Vt
+    return R
+
+
 def _ratio(proj, assoc, p, v_proj, v_assoc) -> float:
     """The ALPS ratio along a perivascular axis p, with denominators
     perpendicular to p and to each region's own tract direction."""
@@ -156,7 +195,8 @@ def _ratio(proj, assoc, p, v_proj, v_assoc) -> float:
 
 
 def alps_one_hemisphere(lam, vec, fa, measure_proj, measure_assoc,
-                        direction_proj, direction_assoc) -> dict | None:
+                        direction_proj, direction_assoc,
+                        template_rotation: np.ndarray | None = None) -> dict | None:
     """Every variant for one hemisphere.
 
     measure_* select the voxels the diffusivity is measured in, conventionally
@@ -197,6 +237,14 @@ def alps_one_hemisphere(lam, vec, fa, measure_proj, measure_assoc,
                + directional_diffusivity(A["lam"], A["vec"], Z))),
         "cross": _ratio(P, A, p_cross, v_proj, v_assoc),
         "measured": _ratio(P, A, p_measured, v_proj, v_assoc),
+        # anatomical: the measured tract frame with the perivascular axis taken
+        # from a registration instead of a cross product, R' x, which is the
+        # same axis in both hemispheres. Reported only when a rotation is
+        # supplied, since it is the one variant that needs one. Exactly
+        # rotation-invariant provided the registration is recomputed for the
+        # head as it lay, because then R' x rotates with the tensors.
+        "anatomical": (_ratio(P, A, _template_axis(template_rotation), v_proj, v_assoc)
+                       if template_rotation is not None else float("nan")),
         # voxelwise: the largest and smallest perpendicular diffusivity in each
         # voxel are lambda2 and lambda3 by definition, so no axis is estimated
         "voxelwise": float((P["lam"][:, 1].mean() + A["lam"][:, 1].mean())
@@ -244,7 +292,8 @@ def alps_from_volumes(evals: np.ndarray, evecs: np.ndarray, affine: np.ndarray,
                       direction_labels: np.ndarray | None = None,
                       fa: np.ndarray | None = None,
                       fa_min: float = FA_MIN,
-                      slab_mm: float = SLAB_MM) -> dict:
+                      slab_mm: float = SLAB_MM,
+                      template_rotation: np.ndarray | None = None) -> dict:
     """Every variant, per hemisphere and averaged.
 
     measure_labels uses 1=L_SCR, 2=R_SCR, 3=L_SLF, 4=R_SLF. direction_labels
@@ -276,7 +325,8 @@ def alps_from_volumes(evals: np.ndarray, evecs: np.ndarray, affine: np.ndarray,
             (measure_labels == scr) & good,
             (measure_labels == slf) & good,
             (direction_labels == scr) & good & band,
-            (direction_labels == slf) & good & band)
+            (direction_labels == slf) & good & band,
+            template_rotation=template_rotation)
         if r is not None:
             per_hemi[name] = r
 

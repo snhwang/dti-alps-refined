@@ -15,11 +15,24 @@ anything.
 |---|---|---|
 | `../tests/test_invariance.py` | the corrected variants are exactly invariant under rotation while the classic index drifts | seconds |
 | `estimator_comparison.py` | why the tract direction is a dyadic average rather than a vector average: sign ambiguity, order dependence, CL against FA as the weight, and why a DEC map hides all of it | seconds |
+| `denominator_contamination.py` | what a tilted measurement frame costs: the share of each ALPS denominator contributed by the fiber's own lambda1, against tilt | seconds |
 
 ```bash
 python -m pytest tests/test_invariance.py -q
 python reproduce/estimator_comparison.py
+python reproduce/denominator_contamination.py
 ```
+
+`denominator_contamination.py` is the construct-validity check, and it needs no
+outcome variable. DTI-ALPS compares diffusivities in the plane perpendicular to
+the local fiber, so a denominator evaluated along an axis that is not
+perpendicular to it admits the fiber's own lambda1, two to three times the
+perpendicular eigenvalues. The demonstration tilts a synthetic fiber off the
+scanner axis and reports what the tilt costs: 5.6% at no tilt, which is
+dispersion within the region, rising to 31.2% at 20 degrees, while a frame built
+from the measured direction stays flat at 5.6%. A higher correlation with age was
+never evidence that the index is measuring the right thing, and this is the same
+claim without one.
 
 `estimator_comparison.py` sweeps orientation dispersion, because the failure it
 demonstrates is conditional. At the dispersion of a real ALPS region the
@@ -32,6 +45,7 @@ and by more than 80 at 40, while the dyadic estimate does not move at all.
 | script | claims covered | data |
 |---|---|---|
 | `head_pose.py` | head pose recovered two independent ways, one of which the brain cannot influence | any NIfTI header, and a FLIRT affine if you have one |
+| `denominator_contamination.py` | the same contamination measured on your own tensors, for classic, template reorientation, the cross product and the anatomical axis | eigenvalues, eigenvectors, ROIs, and a subject-to-template matrix |
 
 Both cohorts whose results can be redistributed are public:
 
@@ -47,6 +61,10 @@ python reproduce/head_pose.py --prescription-dir /path/to/ds004856 --pattern "**
 
 # and pose from a subject-to-template registration, if you have run one
 python reproduce/head_pose.py --affine subject_to_mni.mat
+
+# denominator contamination on your own tensors. Without --affine the template
+# reorientation and anatomical rows are skipped, since both need a registration.
+python reproduce/denominator_contamination.py     --evals evals.nii.gz --evecs evecs.nii.gz --rois rois.nii.gz     --affine subject_to_mni.mat
 ```
 
 The paper measures head pose twice, and the second measurement exists to answer
