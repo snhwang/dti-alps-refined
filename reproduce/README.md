@@ -46,6 +46,7 @@ and by more than 80 at 40, while the dyadic estimate does not move at all.
 |---|---|---|
 | `head_pose.py` | head pose recovered two independent ways, one of which the brain cannot influence | any NIfTI header, and a FLIRT affine if you have one |
 | `denominator_contamination.py` | the same contamination measured on your own tensors, for classic, template reorientation, the cross product and the anatomical axis | eigenvalues, eigenvectors, ROIs, and a subject-to-template matrix |
+| `compare_ld_alps.py` | every variant here beside LD-ALPS, run from the authors' own implementation | the above plus the 4D DWI, rotated bvecs, bvals, and their `ld-alps.py` |
 
 Both cohorts whose results can be redistributed are public:
 
@@ -94,6 +95,18 @@ index on your own data, use the package rather than these scripts:
 dti-alps place-rois --fa subject_FA.nii.gz --out rois.nii.gz
 dti-alps compute --evals evals.nii.gz --evecs evecs.nii.gz --rois rois.nii.gz
 ```
+
+LD-ALPS is not redistributed here. Download it from
+<https://fordburles.com/ld-alps.html> (MIT) and pass the path with `--ld-alps`.
+It differs from every variant in this package in one substantive way: it obtains
+the apparent diffusion coefficient by interpolating the measured signal across
+the acquired gradient directions, and never uses the diffusion tensor. That is
+why it needs the 4D data while the others need only the eigen-decomposition, and
+why agreement between them is a check on the measurement frame rather than on
+the tensor model. Note also that its ROI label order differs from the one
+`dti-alps place-rois` writes; `compare_ld_alps.py` remaps them rather than
+leaving that to the reader, since getting it wrong silently swaps projection for
+association.
 
 See the top-level `README.md`. The regions distributed here are the conventional
 5 mm spheres at the published atlas coordinates, so values are comparable with
