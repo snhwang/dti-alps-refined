@@ -111,3 +111,20 @@ association.
 See the top-level `README.md`. The regions distributed here are the conventional
 5 mm spheres at the published atlas coordinates, so values are comparable with
 the literature that uses them.
+
+## sorting_bias_floor.py
+
+How large is the noise floor on lambda2/lambda3?
+
+The eigenvalues are sorted, so lambda2 >= lambda3 holds by construction rather
+than by anatomy, and sorting a noisy pair separates it. This simulates a single
+b = 1500 shell with 93 directions under Rician noise and reports the recovered
+ratio against the true one, so the floor can be read off at a true ratio of 1.
+
+Requires no data. Runs in about a minute.
+
+    python reproduce/sorting_bias_floor.py
+
+At an SNR of 20 to 30 a true ratio of 1 is recovered as 1.10 to 1.07. The bias
+collapses once the pair leaves degeneracy, to under 0.01 at a true ratio of 1.5,
+which is where white matter in these regions sits.
