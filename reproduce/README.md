@@ -1,5 +1,8 @@
 # Reproducing the paper
 
+Install dependencies with `uv pip install -r reproduce/requirements.txt`,
+and the package itself with `uv pip install -e .`
+
 Scripts for checking the claims in *Head Position Confounds the DTI-ALPS Index
 in Aging and Disease: An Orientation-Aware Refinement* (Magnetic Resonance
 Imaging, MAGRESIMAGING-D-26-00371).

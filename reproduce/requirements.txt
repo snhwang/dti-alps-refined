@@ -1,0 +1,23 @@
+# Dependencies for the reproduction scripts in this directory.
+#
+#   uv venv
+#   uv pip install -r reproduce/requirements.txt
+#   uv pip install -e .            # for dti_alps_refined itself
+#
+# These are the versions the published results were produced under, on Python
+# 3.14.2.
+#
+# Note that the top-level requirements.txt of this repository constrains
+# numpy>=1.24,<2.0 for the processing platform and its dipy dependency. The
+# analyses were run on numpy 2.4.6. If you install the platform and these
+# scripts into one environment, the platform pin wins and the scripts still run;
+# the pins below record what was actually used rather than the narrowest
+# compatible set.
+
+numpy==2.4.6
+pandas==3.0.3
+nibabel==5.4.2
+
+# sorting_bias_floor.py needs only numpy and pandas, and no data at all.
+# compare_ld_alps.py and denominator_contamination.py additionally read NIfTI
+# images through nibabel.
