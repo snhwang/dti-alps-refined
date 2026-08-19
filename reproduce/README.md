@@ -3,9 +3,9 @@
 Install dependencies with `uv pip install -r reproduce/requirements.txt`,
 and the package itself with `uv pip install -e .`
 
-Scripts for checking the claims in *Head Position Confounds the DTI-ALPS Index
-in Aging and Disease: An Orientation-Aware Refinement* (Magnetic Resonance
-Imaging, MAGRESIMAGING-D-26-00371).
+Scripts for checking the claims in *Head Position Confounds DTI-ALPS and the
+Corrected Index Approaches Radial Anisotropy* (Magnetic Resonance Imaging,
+MAGRESIMAGING-D-26-00371).
 
 Each script says at the top which claims it covers and what it needs. Where a
 claim can be checked without any data, the script does that by default, so you
