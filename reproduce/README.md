@@ -3,13 +3,13 @@
 Install dependencies with `uv pip install -r reproduce/requirements.txt`,
 and the package itself with `uv pip install -e .`
 
-Scripts for checking the claims in *Head Position Confounds DTI-ALPS and the
-Corrected Index Approaches Radial Anisotropy* (Magnetic Resonance Imaging,
+Scripts for checking the claims in *Head Position Confounds DTI-ALPS, While Its
+Correction Approaches Radial Anisotropy* (Magnetic Resonance Imaging,
 MAGRESIMAGING-D-26-00371).
 
 Each script says at the top which claims it covers and what it needs. Where a
 claim can be checked without any data, the script does that by default, so you
-can run it immediately and see the behaviour before deciding whether to download
+can run it immediately and see the behavior before deciding whether to download
 anything.
 
 ## What runs with no data at all

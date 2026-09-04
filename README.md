@@ -9,11 +9,18 @@ tensor and two ROI masks (SCR/projection and SLF/association):
 | Method      | Axes used in the ratio                                          | Rotation-invariant |
 | ----------- | --------------------------------------------------------------- | ------------------ |
 | Classic     | Fixed scanner axes (x, y, z). Taoka et al. 2017.                | no                 |
-| Refined     | Subject-specific axes; PVS axis is the cross product of them.   | yes                |
-| Refined+    | Same, with PVS axis additionally refined per-voxel.             | yes                |
+| Cross       | Subject-specific axes; PVS axis is the cross product of them.   | yes                |
+| Per-voxel   | The same cross product with one factor taken per voxel.         | yes                |
+| Refined+    | One PVS axis, FA-weighted over the voxelwise directions. †      | yes †              |
+| Anatomical  | PVS axis from the subject-to-template rotation, not a cross. ‡  | yes ‡              |
 | Measured    | PVS axis estimated from the data as the pooled 2nd eigenvector. | yes                |
 | Voxelwise   | Perpendicular directions taken per voxel, so exactly λ2 / λ3.   | yes                |
 | ALPS-PAS    | Principal axis sorting (Ajouz et al. 2025).                     | about x only       |
+
+† Web UI only (`server.py`), not returned by the command line.
+‡ Needs a subject-to-template rotation, so it is absent when none is given.
+Neither is exercised by the synthetic test below, which runs the command-line
+variants on data with no template.
 
 The last column is the point of the package, and it is checked rather
 than claimed — see [Rotation invariance](#rotation-invariance) below.
@@ -65,8 +72,17 @@ python tests/test_invariance.py
 Builds synthetic tensors, rotates them by 5–30° about each axis, and
 checks that the corrected variants do not move. Needs no data and no
 FSL, and takes a few seconds. Expected: classic drifts by about a third
-over that range, ALPS-PAS by a few percent, and Refined, Measured and
-Voxelwise are constant to machine precision (10⁻¹⁶).
+over that range, ALPS-PAS by a few percent, and Cross, Per-voxel,
+Measured and Voxelwise are constant to machine precision (10⁻¹⁶).
+
+### Reproducing the paper
+
+`reproduce/` holds the analyses behind the accompanying paper, including
+`compare_ld_alps.py`, which runs the variants here beside LD-ALPS (Burles
+et al. 2025). That comparison uses the authors' own implementation rather
+than a reading of their paper; their code is not redistributed here, so
+download it from <https://fordburles.com/ld-alps.html> (MIT) and pass the
+path with `--ld-alps`. See `reproduce/README.md`.
 
 ## What this is *not*
 
@@ -306,8 +322,10 @@ isn't on `PATH` from the shell that launched the server.
 
 ## Citation
 
-If you use this software, please cite the paper (TBD) and the upstream
-methods:
+If you use this software, please cite the paper and the upstream methods:
+
+* Hwang SN, et al. *Head Position Confounds DTI-ALPS, While Its Correction Approaches Radial Anisotropy*. Submitted to *Magnetic Resonance Imaging* (MAGRESIMAGING-D-26-00371).
+
 
 * Taoka T, et al. *Magn Reson Med Sci* 2024;23:268–290 — DTI-ALPS.
 * DIPY — Garyfallidis et al. *Front. Neuroinformatics* 2014;8:8.

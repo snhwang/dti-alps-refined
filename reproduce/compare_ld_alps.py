@@ -14,7 +14,7 @@ direction in every voxel after rejecting outliers by density clustering, then
 obtains the apparent diffusion coefficient by interpolating the measured signal
 across the acquired gradient directions. It never uses the diffusion tensor. The
 variants here read diffusivity from the fitted tensor. That is a different
-measurement, not a different parameterisation, and it is why LD-ALPS needs the
+measurement, not a different parameterization, and it is why LD-ALPS needs the
 4D data while these need only the eigen-decomposition.
 
 Their loader expects a directory per subject, named with a common prefix, each

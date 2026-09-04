@@ -103,8 +103,9 @@ def main() -> int:
     evals, evecs, affine, rois = synthetic()
     base = alps_from_volumes(evals, evecs, affine, rois)["combined"]
 
-    variants = ("classic", "cross", "measured", "voxelwise", "alps_pas")
-    should_be_invariant = {"cross", "measured", "voxelwise"}
+    variants = ("classic", "cross", "per_voxel", "measured",
+                "voxelwise", "alps_pas")
+    should_be_invariant = {"cross", "per_voxel", "measured", "voxelwise"}
 
     print(f"{'axis':<6s} {'deg':>5s} " + " ".join(f"{v:>12s}" for v in variants))
     print(f"{'':6s} {'0':>5s} " + " ".join(f"{base[v]:12.6f}" for v in variants))

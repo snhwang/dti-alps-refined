@@ -249,6 +249,10 @@ def alps_one_hemisphere(lam, vec, fa, measure_proj, measure_assoc,
         # voxel are lambda2 and lambda3 by definition, so no axis is estimated
         "voxelwise": float((P["lam"][:, 1].mean() + A["lam"][:, 1].mean())
                            / (P["lam"][:, 2].mean() + A["lam"][:, 2].mean())),
+        # per-voxel cross product: each voxel's own v1 crossed with the
+        # opposite region's mean direction, so one factor of the cross
+        # product is refined and the other is not
+        "per_voxel": _per_voxel_cross(P, A, v_proj, v_assoc),
         "alps_pas": _alps_pas(P, A),
         "theta_proj_to_z": acute_angle(v_proj, Z),
         "theta_assoc_to_y": acute_angle(v_assoc, Y),
@@ -261,6 +265,42 @@ def alps_one_hemisphere(lam, vec, fa, measure_proj, measure_assoc,
         "n_direction_assoc": int(direction_assoc.sum()),
     }
     return out
+
+
+def _per_voxel_cross(proj, assoc, v_proj, v_assoc) -> float:
+    """The cross-product axis refined voxel by voxel.
+
+    The regional variant crosses two pooled tract directions. This crosses each
+    voxel's own principal direction with the opposite region's mean, which is
+    the finest refinement the geometry allows: the two tracts occupy different
+    voxels, so only one factor can be taken per voxel. Written in the spirit of
+    LD-ALPS rather than as a reimplementation of it; LD-ALPS clusters local
+    directions and interpolates the signal, and reproduce/compare_ld_alps.py
+    runs their implementation for a real comparison.
+
+    Refining one factor does not pay for the regional mean still standing in the
+    other, and this variant attains slightly less of lambda2/lambda3 than the
+    regional cross product does.
+    """
+    num, den = [], []
+    for reg, other in ((proj, v_assoc), (assoc, v_proj)):
+        v1 = reg["v1"]
+        pv = np.cross(v1, other)
+        n = np.linalg.norm(pv, axis=1, keepdims=True)
+        good = n[:, 0] > 1e-8
+        if not good.any():
+            continue
+        pv = pv[good] / n[good]
+        ov = np.cross(pv, v1[good])
+        ov /= np.maximum(np.linalg.norm(ov, axis=1, keepdims=True), 1e-12)
+        lam, vec = reg["lam"][good], reg["vec"][good]
+        dp = np.einsum("nkj,nj->nk", np.transpose(vec, (0, 2, 1)), pv)
+        do = np.einsum("nkj,nj->nk", np.transpose(vec, (0, 2, 1)), ov)
+        num.append((lam * dp ** 2).sum(axis=1).mean())
+        den.append((lam * do ** 2).sum(axis=1).mean())
+    if not num:
+        return float("nan")
+    return float(np.sum(num) / np.sum(den))
 
 
 def _alps_pas(proj, assoc) -> float:
