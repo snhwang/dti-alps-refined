@@ -448,9 +448,6 @@ const SessionInfoPanel: React.FC<SessionInfoPanelProps> = ({ session, onUpdate, 
                         {session.parameters.precompute_sh && (
                             <span className="px-2 py-1 bg-green-500/10 text-green-400 text-xs rounded">SH</span>
                         )}
-                        {session.parameters.precompute_needlet && (
-                            <span className="px-2 py-1 bg-green-500/10 text-green-400 text-xs rounded">Needlet</span>
-                        )}
                         {session.parameters.phase_encode_dir && (
                             <span className="px-2 py-1 bg-secondary text-muted-foreground text-xs rounded">PE: {session.parameters.phase_encode_dir}</span>
                         )}

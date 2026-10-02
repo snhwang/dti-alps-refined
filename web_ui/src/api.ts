@@ -41,7 +41,6 @@ export interface SessionParameters {
     // Legacy flags read from older sessions; not produced by this UI.
     precompute_model_free?: boolean;
     precompute_sh?: boolean;
-    precompute_needlet?: boolean;
 }
 
 export interface Session {

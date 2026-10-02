@@ -1566,317 +1566,6 @@ def compute_sh_entropy_metrics(sh_coeffs, n_coeffs, mask=None):
     }
 
 
-def needlet_window_function(ell, j, B=2.0):
-    """
-    Needlet window function b(ell/B^j).
-
-    For SH order 6 with ell=[0,2,4,6] and 3 scales, we use discrete assignments
-    to ensure each scale has sufficient energy contribution.
-
-    This avoids the issue where continuous windows with support [B^{-1}, B] = [0.5, 2.0]
-    exclude high-degree SH coefficients from low-scale needlets, causing zero scale energies.
-
-    Args:
-        ell: SH degree
-        j: Scale index (0=coarse, 1=medium, 2=fine)
-        B: Scale parameter (default 2.0, not used in discrete version)
-
-    Returns:
-        Window value b_j(ell) for scale j
-    """
-    if ell == 0:
-        return 0.0
-
-    # Discrete scale assignments optimized for ell=[2,4,6] and 3 scales
-    if j == 0:  # Coarse scale - dominated by ell=2
-        if ell == 2:
-            return 1.0
-        elif ell == 4:
-            return 0.3  # Smooth transition
-        else:
-            return 0.0
-    elif j == 1:  # Medium scale - dominated by ell=4
-        if ell == 2:
-            return 0.3  # Smooth transition
-        elif ell == 4:
-            return 1.0
-        elif ell == 6:
-            return 0.3  # Smooth transition
-        else:
-            return 0.0
-    elif j == 2:  # Fine scale - dominated by ell=6
-        if ell == 4:
-            return 0.3  # Smooth transition
-        elif ell == 6:
-            return 1.0
-        else:
-            return 0.0
-    else:
-        return 0.0
-
-
-def generate_fibonacci_sphere_points(n_points):
-    """
-    Generate approximately uniformly distributed points on sphere using Fibonacci spiral.
-
-    This provides a simple, deterministic point set for needlet localization.
-
-    Args:
-        n_points: Number of points to generate
-
-    Returns:
-        theta, phi: Arrays of spherical coordinates
-    """
-    indices = np.arange(0, n_points, dtype=float) + 0.5
-
-    phi = np.arccos(1 - 2 * indices / n_points)  # Polar angle [0, pi]
-    theta = np.pi * (1 + 5**0.5) * indices  # Azimuthal angle (golden angle)
-
-    return theta, phi
-
-
-def compute_needlet_coefficients(sh_coeffs, sh_order=6, B=2.0, n_scales=3, n_points_per_scale=None):
-    """
-    Compute needlet coefficients from SH coefficients.
-
-    Following decomposition.tex Eq. 495:
-    β_jk = sqrt(λ_jk) * Σ_ℓ b(ℓ/B^j) * Σ_m c_ℓm Y_ℓm(ξ_jk)
-
-    Args:
-        sh_coeffs: SH coefficients (X, Y, Z, n_coeffs)
-        sh_order: Maximum SH order (default 6)
-        B: Scale parameter (default 2.0)
-        n_scales: Number of needlet scales (default 3)
-        n_points_per_scale: Points per scale (if None, computed from order)
-
-    Returns:
-        needlet_coeffs: List of arrays, one per scale
-        n_points: List of point counts per scale
-    """
-    from scipy.special import sph_harm
-
-    shape = sh_coeffs.shape[:3]
-
-    # Default: number of points scales with resolution needed at each scale
-    if n_points_per_scale is None:
-        # Heuristic: more points at finer scales
-        n_points_per_scale = [32, 64, 128][:n_scales]
-
-    needlet_coeffs = []
-    n_points_list = []
-
-    # For each scale j
-    for j in range(n_scales):
-        n_pts = n_points_per_scale[j] if j < len(n_points_per_scale) else 64
-        n_points_list.append(n_pts)
-
-        # Generate cubature points on sphere
-        theta_pts, phi_pts = generate_fibonacci_sphere_points(n_pts)
-
-        # Cubature weights (uniform for Fibonacci sphere)
-        lambda_jk = 4 * np.pi / n_pts
-
-        # Initialize coefficients for this scale
-        beta_j = np.zeros(shape + (n_pts,), dtype=np.float32)
-
-        # Reconstruct signal at cubature points using SH coefficients
-        # For each SH order
-        coeff_idx = 0
-        for ell in [0, 2, 4, 6][:sh_order//2 + 1]:
-            # Window function for this ell and scale j
-            window_val = needlet_window_function(ell, j, B)
-
-            if window_val > 1e-10:  # Skip if window is negligible
-                for m in range(-ell, ell + 1):
-                    # Evaluate Y_ℓm at all cubature points
-                    # Note: scipy uses (m, ell, theta, phi) convention
-                    Y_lm_vals = sph_harm(m, ell, theta_pts, phi_pts)
-
-                    # Real SH: convert complex SH to real form
-                    if m < 0:
-                        Y_lm_real = np.sqrt(2) * (-1)**m * Y_lm_vals.imag
-                    elif m == 0:
-                        Y_lm_real = Y_lm_vals.real
-                    else:
-                        Y_lm_real = np.sqrt(2) * (-1)**m * Y_lm_vals.real
-
-                    # Accumulate: β_jk += window * c_ℓm * Y_ℓm(ξ_k)
-                    for k in range(n_pts):
-                        beta_j[..., k] += window_val * sh_coeffs[..., coeff_idx] * Y_lm_real[k]
-
-                    coeff_idx += 1
-            else:
-                coeff_idx += (2 * ell + 1)
-
-        # Apply cubature weight factor
-        beta_j *= np.sqrt(lambda_jk)
-
-        needlet_coeffs.append(beta_j)
-
-    return needlet_coeffs, n_points_list
-
-
-def compute_needlet_entropy_metrics(needlet_coeffs, n_points_list, mask=None):
-    """
-    Compute entropy-based metrics from needlet coefficients.
-
-    Following decomposition.tex Section 4:
-    - H_scale: Scale entropy (Eq. 524)
-    - H_pos^(j): Positional entropy at each scale (Eq. 525)
-    - γ_j: Positional coherence (Eq. 532)
-    - PR_scale, PR_pos^(j): Participation ratios (Eq. 545, 553)
-
-    Args:
-        needlet_coeffs: List of needlet coefficient arrays per scale
-        n_points_list: List of point counts per scale
-        mask: Optional brain mask
-
-    Returns:
-        Dictionary with entropy/PR metrics
-    """
-    n_scales = len(needlet_coeffs)
-    shape = needlet_coeffs[0].shape[:3]
-
-    # Compute total needlet energy: E_tot = Σ_j Σ_k |β_jk|^2
-    E_tot = np.zeros(shape, dtype=np.float32)
-    for beta_j in needlet_coeffs:
-        E_tot += np.sum(beta_j**2, axis=-1)
-
-    E_tot_safe = np.maximum(E_tot, 1e-20)
-
-    # Per-scale energies: E_j = Σ_k |β_jk|^2
-    E_scales = []
-    for beta_j in needlet_coeffs:
-        E_j = np.sum(beta_j**2, axis=-1)
-        E_scales.append(E_j)
-
-    # Scale distribution: p_j = E_j / E_tot (marginal over scales)
-    p_scales = []
-    for E_j in E_scales:
-        p_j = E_j / E_tot_safe
-        p_scales.append(p_j)
-
-    # ===== H_scale: Scale entropy (Eq. 524) =====
-    H_scale = np.zeros(shape, dtype=np.float32)
-    for p_j in p_scales:
-        p_j_safe = np.maximum(p_j, 1e-20)
-        # Only add where p_j > 0
-        mask_nonzero = p_j > 1e-20
-        H_scale[mask_nonzero] += -p_j[mask_nonzero] * np.log(p_j_safe[mask_nonzero])
-
-    # ===== PR_scale: Scale participation ratio (Eq. 545) =====
-    sum_p_j_squared = np.zeros(shape, dtype=np.float32)
-    for p_j in p_scales:
-        sum_p_j_squared += p_j**2
-    PR_scale = 1.0 / np.maximum(sum_p_j_squared, 1e-20)
-
-    # ===== Per-scale positional metrics =====
-    H_pos_scales = []
-    PR_pos_scales = []
-    gamma_scales = []
-    gamma2_scales = []
-    sparsity_scales = []
-
-    for j, (beta_j, n_pts, E_j) in enumerate(zip(needlet_coeffs, n_points_list, E_scales)):
-        E_j_safe = np.maximum(E_j, 1e-20)
-
-        # Conditional distribution: p_{k|j} = |β_jk|^2 / E_j (Eq. 508)
-        p_k_given_j = beta_j**2 / E_j_safe[..., np.newaxis]
-
-        # H_pos^(j): Positional entropy at scale j (Eq. 525)
-        p_k_safe = np.maximum(p_k_given_j, 1e-20)
-        H_pos_j = -np.sum(p_k_given_j * np.log(p_k_safe), axis=-1)
-        H_pos_scales.append(H_pos_j)
-
-        # PR_pos^(j): Positional participation ratio (Eq. 553)
-        sum_p_k_sq = np.sum(p_k_given_j**2, axis=-1)
-        PR_pos_j = 1.0 / np.maximum(sum_p_k_sq, 1e-20)
-        PR_pos_scales.append(PR_pos_j)
-
-        # γ_j: Positional coherence (Eq. 532)
-        # γ_j = 1 - H_pos^(j) / log(N_j)
-        max_H_pos = np.log(n_pts)
-        gamma_j = 1.0 - H_pos_j / max_H_pos
-        gamma_j = np.clip(gamma_j, 0, 1)
-        gamma_scales.append(gamma_j)
-
-        # γ₂_j: Rényi-2 positional coherence (robust variant)
-        # γ₂_j = 1 - ln(PR_pos^(j)) / ln(K_j)
-        # Uses Rényi entropy of order 2: H₂ = -ln(Σp²) = ln(PR)
-        # Less sensitive to noisy tail of small coefficients
-        gamma2_j = 1.0 - np.log(np.maximum(PR_pos_j, 1.0)) / max_H_pos
-        gamma2_j = np.clip(gamma2_j, 0, 1)
-        gamma2_scales.append(gamma2_j)
-
-        # S_j: Scale-specific sparsity index (Paper Eq. 571)
-        # S_j = (Σ|β_jk|)² / (N_j · Σ|β_jk|²)
-        # Smaller = sparser (few dominant coefficients)
-        abs_beta = np.abs(beta_j)
-        sum_abs = np.sum(abs_beta, axis=-1)
-        sum_abs_sq = np.sum(abs_beta**2, axis=-1)
-        S_j = (sum_abs**2) / (n_pts * np.maximum(sum_abs_sq, 1e-20))
-        sparsity_scales.append(S_j)
-
-    # ===== H_W: Total needlet entropy (Eq. 520) =====
-    # H_W = H_scale + Σ_j p_j * H_pos^(j)
-    H_W = H_scale.copy()
-    for p_j, H_pos_j in zip(p_scales, H_pos_scales):
-        H_W += p_j * H_pos_j
-
-    # ===== Weighted averages across scales =====
-    # γ_avg = Σ_j p_j * γ_j (overall localization)
-    gamma_avg = np.zeros(shape, dtype=np.float32)
-    for p_j, gamma_j in zip(p_scales, gamma_scales):
-        gamma_avg += p_j * gamma_j
-
-    # γ₂_avg = Σ_j p_j * γ₂_j (Rényi-2 overall localization)
-    gamma2_avg = np.zeros(shape, dtype=np.float32)
-    for p_j, gamma2_j in zip(p_scales, gamma2_scales):
-        gamma2_avg += p_j * gamma2_j
-
-    # PR_pos,avg = Σ_j p_j * PR_pos^(j) (average effective directions)
-    PR_pos_avg = np.zeros(shape, dtype=np.float32)
-    for p_j, PR_pos_j in zip(p_scales, PR_pos_scales):
-        PR_pos_avg += p_j * PR_pos_j
-
-    # H_pos,avg = Σ_j p_j * H_pos^(j) (average positional entropy)
-    H_pos_avg = np.zeros(shape, dtype=np.float32)
-    for p_j, H_pos_j in zip(p_scales, H_pos_scales):
-        H_pos_avg += p_j * H_pos_j
-
-    # Apply mask if provided
-    if mask is not None:
-        H_scale = H_scale * mask
-        PR_scale = PR_scale * mask
-        H_W = H_W * mask
-        gamma_avg = gamma_avg * mask
-        gamma2_avg = gamma2_avg * mask
-        PR_pos_avg = PR_pos_avg * mask
-        H_pos_avg = H_pos_avg * mask
-        for j in range(n_scales):
-            H_pos_scales[j] = H_pos_scales[j] * mask
-            PR_pos_scales[j] = PR_pos_scales[j] * mask
-            gamma_scales[j] = gamma_scales[j] * mask
-            gamma2_scales[j] = gamma2_scales[j] * mask
-            sparsity_scales[j] = sparsity_scales[j] * mask
-
-    return {
-        'H_scale': H_scale,
-        'PR_scale': PR_scale,
-        'H_W': H_W,  # Total needlet entropy (chain rule: H_W = H_scale + H_pos,avg)
-        'H_pos_scales': H_pos_scales,  # List of arrays, one per scale
-        'PR_pos_scales': PR_pos_scales,
-        'gamma_scales': gamma_scales,
-        'gamma_avg': gamma_avg,  # Weighted average positional coherence
-        'gamma2_scales': gamma2_scales,  # Rényi-2 positional coherence per scale
-        'gamma2_avg': gamma2_avg,  # Weighted average Rényi-2 positional coherence
-        'PR_pos_avg': PR_pos_avg,  # Weighted average positional PR
-        'H_pos_avg': H_pos_avg,  # Weighted average positional entropy (= H_W - H_scale)
-        'sparsity_scales': sparsity_scales,  # Needlet sparsity index per scale
-        'p_scales': p_scales  # Scale energy ratios: p_j = E_j / E_tot
-    }
-
-
 def compute_angular_entropy(dwi_data, bvals, bvecs, mask, signal_floor=1e-2, b0_mean_provided=None):
     """
     Compute angular entropy (H_ang) from normalized diffusion signal.
@@ -7190,8 +6879,7 @@ async def process_dti(
     eddy_slm: str = Form("linear", description="Eddy second level model: none/linear/quadratic"),
     precompute_dti: bool = Form(True, description="Precompute DTI metric maps (FA, MD, AD, RD)"),
     precompute_model_free: bool = Form(False, description="Precompute model-free ADC and directional diffusivities"),
-    precompute_sh: bool = Form(False, description="Precompute spherical harmonics coefficients"),
-    precompute_needlet: bool = Form(False, description="Precompute needlet coefficients (requires SH)")
+    precompute_sh: bool = Form(False, description="Precompute spherical harmonics coefficients")
 ):
     """
     Process DTI data with optional eddy current/motion correction and generate maps.
@@ -7286,8 +6974,7 @@ async def process_dti(
         eddy_slm=eddy_slm,
         precompute_dti=precompute_dti,
         precompute_model_free=precompute_model_free,
-        precompute_sh=precompute_sh,
-        precompute_needlet=precompute_needlet
+        precompute_sh=precompute_sh
     )
 
     result = {
@@ -7351,7 +7038,6 @@ class LocalProcessingRequest(BaseModel):
     precompute_dti: bool = True
     precompute_model_free: bool = False
     precompute_sh: bool = False
-    precompute_needlet: bool = False
 
 
 @app.post("/process_dti_local")
@@ -7471,8 +7157,7 @@ async def process_dti_local(
         eddy_slm=request.eddy_slm,
         precompute_dti=request.precompute_dti,
         precompute_model_free=request.precompute_model_free,
-        precompute_sh=request.precompute_sh,
-        precompute_needlet=request.precompute_needlet
+        precompute_sh=request.precompute_sh
     )
 
     result = {
@@ -7516,7 +7201,6 @@ class BatchProcessingConfig(BaseModel):
     precompute_dti: bool = True
     precompute_model_free: bool = False
     precompute_sh: bool = False
-    precompute_needlet: bool = False
     use_json_params: bool = False  # Whether to use JSON sidecar for eddy params
     include_anat: bool = False  # Whether to include anatomical images (FLAIR, T1) from anat folder
     include_json: bool = True  # Whether to copy JSON sidecars to output (BIDS-like preservation)
@@ -7962,8 +7646,7 @@ def run_batch_processing(datasets: List[BatchDataset], config: BatchProcessingCo
                 eddy_slm="linear",
                 precompute_dti=config.precompute_dti,
                 precompute_model_free=config.precompute_model_free,
-                precompute_sh=config.precompute_sh,
-                precompute_needlet=config.precompute_needlet
+                precompute_sh=config.precompute_sh
             )
 
             # Get the session ID from the results
@@ -8173,7 +7856,6 @@ class HCPAgingProcessingConfig(BaseModel):
     precompute_dti: bool = True
     precompute_model_free: bool = False
     precompute_sh: bool = False
-    precompute_needlet: bool = False
     fnirt_preset: str = "standard"  # Atlas registration preset: "standard" or "fine"
     use_nonlinear: bool = True  # Use FNIRT nonlinear registration
     folder: str = ""  # Session manager folder for organizing sessions by project
@@ -8817,8 +8499,7 @@ def run_hcp_aging_batch_processing(datasets: List[HCPAgingDataset], config: HCPA
                 eddy_slm="linear",
                 precompute_dti=config.precompute_dti,
                 precompute_model_free=config.precompute_model_free,
-                precompute_sh=config.precompute_sh,
-                precompute_needlet=config.precompute_needlet
+                precompute_sh=config.precompute_sh
             )
 
             # Get the session ID from results
@@ -9051,7 +8732,7 @@ async def batch_export_metrics(request: BatchMetricExportRequest):
                         finally:
                             tmp_path.unlink(missing_ok=True)
 
-                # TODO: signal-based metrics (entropy, ADC variants, SH, needlet)
+                # TODO: signal-based metrics (entropy, ADC variants, SH)
                 # These require loading DWI via resolve_dwi_data() and computing per-shell
                 if signal_metrics:
                     logging.warning(
@@ -9137,7 +8818,6 @@ class HCPZipProcessRequest(BaseModel):
     precompute_dti: bool = True
     precompute_model_free: bool = False
     precompute_sh: bool = False
-    precompute_needlet: bool = False
     folder: str = ""  # Session manager folder for organizing sessions by project
 
 
@@ -9367,8 +9047,7 @@ def process_single_hcp_zip_background(
             eddy_slm="linear",
             precompute_dti=request.precompute_dti,
             precompute_model_free=request.precompute_model_free,
-            precompute_sh=request.precompute_sh,
-            precompute_needlet=request.precompute_needlet
+            precompute_sh=request.precompute_sh
         )
 
         # Post-processing: update session metadata with HCP source info
@@ -9448,8 +9127,7 @@ def process_dti_background(
     eddy_slm: str = "linear",
     precompute_dti: bool = True,
     precompute_model_free: bool = False,
-    precompute_sh: bool = False,
-    precompute_needlet: bool = False
+    precompute_sh: bool = False
 ):
     """Background task for DTI processing.
     
@@ -10524,7 +10202,7 @@ def process_dti_background(
 
             # Precompute spherical harmonics coefficients
             sh_coeffs = None
-            if precompute_sh or precompute_needlet:
+            if precompute_sh:
                 processing_status["current_step"] = "Precomputing spherical harmonics coefficients..."
                 logging.info("Precomputing SH coefficients (order 6)...")
 
@@ -10535,29 +10213,6 @@ def process_dti_background(
                 sh_img = nib.Nifti1Image(sh_coeffs.astype(np.float32), img.affine, img.header)
                 nib.save(sh_img, processed_dir / "sh_coeffs_order6.nii.gz")
                 logging.info(f"Saved SH coefficients to {processed_dir / 'sh_coeffs_order6.nii.gz'}")
-
-            # Precompute needlet coefficients (requires SH coefficients)
-            if precompute_needlet:
-                if sh_coeffs is None:
-                    # Load SH coefficients if they were computed earlier but not in this run
-                    sh_path = processed_dir / "sh_coeffs_order6.nii.gz"
-                    if sh_path.exists():
-                        sh_coeffs = nib.load(sh_path).get_fdata()
-
-                if sh_coeffs is not None:
-                    processing_status["current_step"] = "Precomputing needlet coefficients..."
-                    logging.info("Precomputing needlet coefficients (3 scales)...")
-
-                    needlet_coeffs, n_points_list = compute_needlet_coefficients(
-                        sh_coeffs, sh_order=6, B=2.0, n_scales=3
-                    )
-
-                    for j, coeffs_j in enumerate(needlet_coeffs):
-                        coeffs_img = nib.Nifti1Image(coeffs_j.astype(np.float32), img.affine, img.header)
-                        nib.save(coeffs_img, processed_dir / f"needlet_coeffs_scale{j}.nii.gz")
-                        logging.info(f"Saved needlet scale {j} to {processed_dir / f'needlet_coeffs_scale{j}.nii.gz'}")
-                else:
-                    logging.warning("Cannot compute needlet coefficients without SH coefficients")
 
         except Exception as e:
             raise Exception(f"Failed to save results: {str(e)}")
@@ -10612,8 +10267,7 @@ def process_dti_background(
                 "registration_target": registration_target,
                 "precompute_dti": precompute_dti,
                 "precompute_model_free": precompute_model_free,
-                "precompute_sh": precompute_sh,
-                "precompute_needlet": precompute_needlet
+                "precompute_sh": precompute_sh
             },
             "outputs": {
                 "session_dir": str(session_dir),
@@ -12907,37 +12561,6 @@ async def unified_map_viewer(timestamp: str):
                             <option value="ac">AC</option>
                             <option value="gamma_sh">γ_SH (spectral coherence)</option>
                         </optgroup>
-                        <optgroup label="Needlet Metrics">
-                            <option value="h_w">H_W (total entropy)</option>
-                            <option value="h_scale">H_scale</option>
-                            <option value="pr_scale">PR_scale</option>
-                            <option value="h_pos_avg">H_pos,avg</option>
-                            <option value="h_pos_scale0">H_pos^(0)</option>
-                            <option value="h_pos_scale1">H_pos^(1)</option>
-                            <option value="h_pos_scale2">H_pos^(2)</option>
-                            <option value="gamma_avg">γ_avg</option>
-                            <option value="gamma_scale0">γ₀ (scale 0)</option>
-                            <option value="gamma_scale1">γ₁ (scale 1)</option>
-                            <option value="gamma_scale2">γ₂ (scale 2)</option>
-                            <option value="gamma2_avg">γ₂_avg (Rényi-2)</option>
-                            <option value="gamma2_avg_fa02">γ₂_avg FA>0.2</option>
-                            <option value="gamma2_scale0">γ₂₀ Rényi (scale 0)</option>
-                            <option value="gamma2_scale1">γ₂₁ Rényi (scale 1)</option>
-                            <option value="gamma2_scale2">γ₂₂ Rényi (scale 2)</option>
-                            <option value="pr_pos_avg">PR_pos,avg</option>
-                            <option value="pr_pos_scale0">PR_pos^(0)</option>
-                            <option value="pr_pos_scale1">PR_pos^(1)</option>
-                            <option value="pr_pos_scale2">PR_pos^(2)</option>
-                            <option value="sparsity_needlet_scale0">S₀ needlet sparsity</option>
-                            <option value="sparsity_needlet_scale1">S₁ needlet sparsity</option>
-                            <option value="sparsity_needlet_scale2">S₂ needlet sparsity</option>
-                            <option value="sparsity_needlet_scale0_fa02">S₀ sparsity FA>0.2</option>
-                            <option value="sparsity_needlet_scale1_fa02">S₁ sparsity FA>0.2</option>
-                            <option value="sparsity_needlet_scale2_fa02">S₂ sparsity FA>0.2</option>
-                            <option value="scale_energy_ratio0">p₀ energy fraction (coarse)</option>
-                            <option value="scale_energy_ratio1">p₁ energy fraction (mid)</option>
-                            <option value="scale_energy_ratio2">p₂ energy fraction (fine)</option>
-                        </optgroup>
                         <optgroup label="Entropy">
                             <option value="a_h">A_H</option>
                             <option value="h_dev">H_dev</option>
@@ -13180,38 +12803,7 @@ async def unified_map_viewer(timestamp: str):
             'cdci': {{ title: 'CDCI (Composite Diffusion Complexity Index)', desc: 'Joint measure of anisotropy strength AND complexity. High in organized but complex white matter (crossings). Low in isotropic tissue or simple single-fiber regions.', formula: 'CDCI = R_aniso × H_aniso', range: '[0, ∞)' }},
             'cdci_norm': {{ title: 'CDCI* (Normalized CDCI)', desc: 'CDCI scaled to [0,1]. Easier to interpret and compare across subjects. Balances anisotropy magnitude with directional complexity.', formula: 'CDCI* = R_aniso × (H_aniso/ln(N))', range: '[0, 1]' }},
             'ac': {{ title: 'AC (Anisotropy Coefficient)', desc: 'SH-based anisotropy similar to FA. Works without tensor fitting. High in white matter, low in isotropic tissue. Handles crossing fibers better than FA.', formula: 'AC = √(E_aniso/E_total)', range: '[0, 1]' }},
-            'gamma_sh': {{ title: 'γ_SH (SH Spectral Coherence)', desc: 'How concentrated angular energy is across SH bands (ℓ=0,2,4,6). High = dominated by one band (simple structure). Low = energy spread across many ℓ (complex angular structure). Measures global spectral concentration, complementary to needlet spatial localization.', formula: 'γ_SH = 1 - H(Pℓ)/ln(L_max)', range: '[0, 1]' }},
-
-            // Needlet Metrics
-            'h_w': {{ title: 'H_W (Needlet Wavelet Entropy)', desc: 'Total information content across spatial scales. High = signal features at multiple resolutions. Captures both broad orientation and fine angular details.', formula: 'H_W = Σpⱼ·H_pos^(j)', range: '[0, ∞)' }},
-            'h_scale': {{ title: 'H_scale (Scale Distribution Entropy)', desc: 'How evenly energy is distributed across resolution scales. High = multi-scale structure. Low = dominated by one scale (either smooth or highly detailed).', formula: 'H_scale = -Σpⱼ·ln(pⱼ)', range: '[0, ln(J)]' }},
-            'pr_scale': {{ title: 'PR_scale (Scale Participation Ratio)', desc: 'Effective number of resolution scales contributing. High = complex multi-scale structure. Low = simple pattern at one dominant scale.', formula: 'PR_scale = 1/Σpⱼ²', range: '[1, J]' }},
-            'h_pos_avg': {{ title: 'H_pos,avg (Average Positional Entropy)', desc: 'How spread out the signal is across directions (averaged over scales). High = diffuse angular pattern. Low = concentrated in few directions.', formula: 'H_pos,avg = Σpⱼ·H_pos^(j)', range: '[0, ∞)' }},
-            'h_pos_scale0': {{ title: 'H_pos Scale 0 (Coarse Positional Entropy)', desc: 'Angular spread at the coarsest (lowest frequency) scale. Captures broad directional trends. High = multiple lobes. Low = single dominant direction.', range: '[0, ln(K₀)]' }},
-            'h_pos_scale1': {{ title: 'H_pos Scale 1 (Mid Positional Entropy)', desc: 'Angular spread at intermediate resolution. Captures medium-frequency directional structure.', range: '[0, ln(K₁)]' }},
-            'h_pos_scale2': {{ title: 'H_pos Scale 2 (Fine Positional Entropy)', desc: 'Angular spread at finest resolution. Captures fine directional details and sharp features.', range: '[0, ln(K₂)]' }},
-            'gamma_avg': {{ title: 'γ_avg (Average Coherence)', desc: 'How focused/localized the angular signal is (averaged). High = well-defined directional peaks. Low = diffuse spread. Indicator of fiber coherence.', formula: 'γ_avg = Σpⱼ·γⱼ', range: '[0, 1]' }},
-            'gamma_scale0': {{ title: 'γ₀ (Coarse Scale Coherence)', desc: 'Directional focus at coarse scale. High = strong single orientation. Low = multiple competing directions or isotropy.', formula: 'γⱼ = 1 - H_pos^(j)/ln(Kⱼ)', range: '[0, 1]' }},
-            'gamma_scale1': {{ title: 'γ₁ (Mid Scale Coherence)', desc: 'Directional focus at intermediate scale. Captures mid-frequency angular coherence.', range: '[0, 1]' }},
-            'gamma_scale2': {{ title: 'γ₂ (Fine Scale Coherence)', desc: 'Directional focus at finest scale. High = sharp, well-defined peaks. Low = smooth or noisy pattern.', range: '[0, 1]' }},
-            'gamma2_avg': {{ title: 'γ₂_avg (Rényi-2 Avg Coherence)', desc: 'Robust coherence using Rényi-2 entropy instead of Shannon. Less sensitive to noisy small coefficients. High = well-defined peaks. Low = diffuse.', formula: 'γ₂ = 1 - ln(PR_pos)/ln(K)', range: '[0, 1]' }},
-            'gamma2_avg_fa02': {{ title: 'γ₂_avg FA>0.2 (Rényi-2 WM Coherence)', desc: 'Rényi-2 coherence masked to white matter (FA > 0.2). Cleaner view of fiber coherence without CSF/GM noise.', range: '[0, 1]' }},
-            'gamma2_scale0': {{ title: 'γ₂₀ Rényi (Coarse Coherence)', desc: 'Robust directional focus at coarse scale. Less noise-sensitive than Shannon-based γ₀.', range: '[0, 1]' }},
-            'gamma2_scale1': {{ title: 'γ₂₁ Rényi (Mid Coherence)', desc: 'Robust directional focus at intermediate scale. Less noise-sensitive than Shannon-based γ₁.', range: '[0, 1]' }},
-            'gamma2_scale2': {{ title: 'γ₂₂ Rényi (Fine Coherence)', desc: 'Robust directional focus at finest scale. Less noise-sensitive than Shannon-based γ₂.', range: '[0, 1]' }},
-            'pr_pos_avg': {{ title: 'PR_pos,avg (Avg Directional Participation)', desc: 'Effective number of directions contributing (averaged). High = many directions active. Low = few dominant directions.', range: '[1, K]' }},
-            'pr_pos_scale0': {{ title: 'PR_pos Scale 0', desc: 'Effective directions at coarsest scale. Indicates number of distinct fiber populations visible at low resolution.', range: '[1, K₀]' }},
-            'pr_pos_scale1': {{ title: 'PR_pos Scale 1', desc: 'Effective directions at intermediate scale.', range: '[1, K₁]' }},
-            'pr_pos_scale2': {{ title: 'PR_pos Scale 2', desc: 'Effective directions at finest scale.', range: '[1, K₂]' }},
-            'sparsity_needlet_scale0': {{ title: 'S₀ (Needlet Sparsity Scale 0)', desc: 'L1/L2 sparsity of needlet coefficients at coarsest scale. Smaller = sparser (few dominant directions). Operates on coefficient magnitudes, not energies.', formula: 'S_j = (Σ|β|)²/(N·Σ|β|²)', range: '[1/K₀, 1]' }},
-            'sparsity_needlet_scale1': {{ title: 'S₁ (Needlet Sparsity Scale 1)', desc: 'L1/L2 sparsity at intermediate scale. Smaller = sparser.', formula: 'S_j = (Σ|β|)²/(N·Σ|β|²)', range: '[1/K₁, 1]' }},
-            'sparsity_needlet_scale2': {{ title: 'S₂ (Needlet Sparsity Scale 2)', desc: 'L1/L2 sparsity at finest scale. Smaller = sparser.', formula: 'S_j = (Σ|β|)²/(N·Σ|β|²)', range: '[1/K₂, 1]' }},
-            'sparsity_needlet_scale0_fa02': {{ title: 'S₀ Sparsity FA>0.2', desc: 'Needlet sparsity at coarsest scale, masked to white matter (FA > 0.2).', range: '[1/K₀, 1]' }},
-            'sparsity_needlet_scale1_fa02': {{ title: 'S₁ Sparsity FA>0.2', desc: 'Needlet sparsity at intermediate scale, masked to white matter (FA > 0.2).', range: '[1/K₁, 1]' }},
-            'sparsity_needlet_scale2_fa02': {{ title: 'S₂ Sparsity FA>0.2', desc: 'Needlet sparsity at finest scale, masked to white matter (FA > 0.2).', range: '[1/K₂, 1]' }},
-            'scale_energy_ratio0': {{ title: 'p₀ Scale Energy Fraction (Coarse)', desc: 'Proportion of total needlet energy at coarsest scale. High = smooth, low-frequency structure (single fiber).', formula: 'p₀ = E₀/(E₀+E₁+E₂)', range: '[0, 1]' }},
-            'scale_energy_ratio1': {{ title: 'p₁ Scale Energy Fraction (Mid)', desc: 'Proportion of total needlet energy at intermediate scale. High = moderate angular detail (fanning, bending).', formula: 'p₁ = E₁/(E₀+E₁+E₂)', range: '[0, 1]' }},
-            'scale_energy_ratio2': {{ title: 'p₂ Scale Energy Fraction (Fine)', desc: 'Proportion of total needlet energy at finest scale. High = sharp angular features (crossings, noise).', formula: 'p₂ = E₂/(E₀+E₁+E₂)', range: '[0, 1]' }},
+            'gamma_sh': {{ title: 'γ_SH (SH Spectral Coherence)', desc: 'How concentrated angular energy is across SH bands (ℓ=0,2,4,6). High = dominated by one band (simple structure). Low = energy spread across many ℓ (complex angular structure). Measures global spectral concentration.', formula: 'γ_SH = 1 - H(Pℓ)/ln(L_max)', range: '[0, 1]' }},
 
             // Direction-domain Entropy
             'a_h': {{ title: 'A_H (Angular Entropy Anisotropy)', desc: 'Entropy-based anisotropy, inverted so high=anisotropic like FA. Measures deviation from uniform diffusion. Information-theoretic alternative to FA.', formula: 'A_H = 1 - H_D/ln(N)', range: '[0, 1]' }},
@@ -14559,37 +14151,6 @@ async def multi_panel_viewer(timestamp: str, layout: str = "2x2"):
                             <option value="ac">AC</option>
                             <option value="gamma_sh">γ_SH (spectral coherence)</option>
                         </optgroup>
-                        <optgroup label="Needlet Metrics">
-                            <option value="h_w">H_W (total entropy)</option>
-                            <option value="h_scale">H_scale</option>
-                            <option value="pr_scale">PR_scale</option>
-                            <option value="h_pos_avg">H_pos,avg</option>
-                            <option value="h_pos_scale0">H_pos^(0)</option>
-                            <option value="h_pos_scale1">H_pos^(1)</option>
-                            <option value="h_pos_scale2">H_pos^(2)</option>
-                            <option value="gamma_avg">γ_avg</option>
-                            <option value="gamma_scale0">γ₀ (scale 0)</option>
-                            <option value="gamma_scale1">γ₁ (scale 1)</option>
-                            <option value="gamma_scale2">γ₂ (scale 2)</option>
-                            <option value="gamma2_avg">γ₂_avg (Rényi-2)</option>
-                            <option value="gamma2_avg_fa02">γ₂_avg FA>0.2</option>
-                            <option value="gamma2_scale0">γ₂₀ Rényi (scale 0)</option>
-                            <option value="gamma2_scale1">γ₂₁ Rényi (scale 1)</option>
-                            <option value="gamma2_scale2">γ₂₂ Rényi (scale 2)</option>
-                            <option value="pr_pos_avg">PR_pos,avg</option>
-                            <option value="pr_pos_scale0">PR_pos^(0)</option>
-                            <option value="pr_pos_scale1">PR_pos^(1)</option>
-                            <option value="pr_pos_scale2">PR_pos^(2)</option>
-                            <option value="sparsity_needlet_scale0">S₀ needlet sparsity</option>
-                            <option value="sparsity_needlet_scale1">S₁ needlet sparsity</option>
-                            <option value="sparsity_needlet_scale2">S₂ needlet sparsity</option>
-                            <option value="sparsity_needlet_scale0_fa02">S₀ sparsity FA>0.2</option>
-                            <option value="sparsity_needlet_scale1_fa02">S₁ sparsity FA>0.2</option>
-                            <option value="sparsity_needlet_scale2_fa02">S₂ sparsity FA>0.2</option>
-                            <option value="scale_energy_ratio0">p₀ energy fraction (coarse)</option>
-                            <option value="scale_energy_ratio1">p₁ energy fraction (mid)</option>
-                            <option value="scale_energy_ratio2">p₂ energy fraction (fine)</option>
-                        </optgroup>
                         <optgroup label="Entropy">
                             <option value="a_h">A_H</option>
                             <option value="h_dev">H_dev</option>
@@ -15578,37 +15139,6 @@ async def multi_panel_viewer(timestamp: str, layout: str = "2x2"):
             'cdci': {{ title: 'CDCI (Composite Diffusion Complexity Index)', desc: 'Joint measure of anisotropy strength AND complexity. High in organized but complex white matter (crossings). Low in isotropic tissue or simple single-fiber regions.', range: '[0, ∞)' }},
             'cdci_norm': {{ title: 'CDCI* (Normalized CDCI)', desc: 'CDCI scaled to [0,1]. Easier to interpret and compare across subjects. Balances anisotropy magnitude with directional complexity.', range: '[0, 1]' }},
             'ac': {{ title: 'AC (Anisotropy Coefficient)', desc: 'SH-based anisotropy similar to FA. Works without tensor fitting. High in white matter, low in isotropic tissue. Handles crossing fibers better than FA.', range: '[0, 1]' }},
-
-            // Needlet Metrics
-            'h_w': {{ title: 'H_W (Needlet Wavelet Entropy)', desc: 'Total information content across spatial scales. High = signal features at multiple resolutions. Captures both broad orientation and fine angular details.', range: '[0, ∞)' }},
-            'h_scale': {{ title: 'H_scale (Scale Distribution Entropy)', desc: 'How evenly energy is distributed across resolution scales. High = multi-scale structure. Low = dominated by one scale (either smooth or highly detailed).', range: '[0, ln(J)]' }},
-            'pr_scale': {{ title: 'PR_scale (Scale Participation Ratio)', desc: 'Effective number of resolution scales contributing. High = complex multi-scale structure. Low = simple pattern at one dominant scale.', range: '[1, J]' }},
-            'h_pos_avg': {{ title: 'H_pos,avg (Average Positional Entropy)', desc: 'How spread out the signal is across directions (averaged over scales). High = diffuse angular pattern. Low = concentrated in few directions.' }},
-            'h_pos_scale0': {{ title: 'H_pos Scale 0 (Coarse Positional Entropy)', desc: 'Angular spread at the coarsest (lowest frequency) scale. Captures broad directional trends. High = multiple lobes. Low = single dominant direction.' }},
-            'h_pos_scale1': {{ title: 'H_pos Scale 1 (Mid Positional Entropy)', desc: 'Angular spread at intermediate resolution. Captures medium-frequency directional structure.' }},
-            'h_pos_scale2': {{ title: 'H_pos Scale 2 (Fine Positional Entropy)', desc: 'Angular spread at finest resolution. Captures fine directional details and sharp features.' }},
-            'gamma_avg': {{ title: 'γ_avg (Average Coherence)', desc: 'How focused/localized the angular signal is (averaged). High = well-defined directional peaks. Low = diffuse spread. Indicator of fiber coherence.', range: '[0, 1]' }},
-            'gamma_scale0': {{ title: 'γ₀ (Coarse Scale Coherence)', desc: 'Directional focus at coarse scale. High = strong single orientation. Low = multiple competing directions or isotropy.', range: '[0, 1]' }},
-            'gamma_scale1': {{ title: 'γ₁ (Mid Scale Coherence)', desc: 'Directional focus at intermediate scale. Captures mid-frequency angular coherence.', range: '[0, 1]' }},
-            'gamma_scale2': {{ title: 'γ₂ (Fine Scale Coherence)', desc: 'Directional focus at finest scale. High = sharp, well-defined peaks. Low = smooth or noisy pattern.', range: '[0, 1]' }},
-            'gamma2_avg': {{ title: 'γ₂_avg (Rényi-2 Avg Coherence)', desc: 'Robust coherence using Rényi-2 entropy instead of Shannon. Less sensitive to noisy small coefficients. High = well-defined peaks. Low = diffuse.', formula: 'γ₂ = 1 - ln(PR_pos)/ln(K)', range: '[0, 1]' }},
-            'gamma2_avg_fa02': {{ title: 'γ₂_avg FA>0.2 (Rényi-2 WM Coherence)', desc: 'Rényi-2 coherence masked to white matter (FA > 0.2). Cleaner view of fiber coherence without CSF/GM noise.', range: '[0, 1]' }},
-            'gamma2_scale0': {{ title: 'γ₂₀ Rényi (Coarse Coherence)', desc: 'Robust directional focus at coarse scale. Less noise-sensitive than Shannon-based γ₀.', range: '[0, 1]' }},
-            'gamma2_scale1': {{ title: 'γ₂₁ Rényi (Mid Coherence)', desc: 'Robust directional focus at intermediate scale. Less noise-sensitive than Shannon-based γ₁.', range: '[0, 1]' }},
-            'gamma2_scale2': {{ title: 'γ₂₂ Rényi (Fine Coherence)', desc: 'Robust directional focus at finest scale. Less noise-sensitive than Shannon-based γ₂.', range: '[0, 1]' }},
-            'pr_pos_avg': {{ title: 'PR_pos,avg (Avg Directional Participation)', desc: 'Effective number of directions contributing (averaged). High = many directions active. Low = few dominant directions.' }},
-            'pr_pos_scale0': {{ title: 'PR_pos Scale 0', desc: 'Effective directions at coarsest scale. Indicates number of distinct fiber populations visible at low resolution.' }},
-            'pr_pos_scale1': {{ title: 'PR_pos Scale 1', desc: 'Effective directions at intermediate scale.' }},
-            'pr_pos_scale2': {{ title: 'PR_pos Scale 2', desc: 'Effective directions at finest scale.' }},
-            'sparsity_needlet_scale0': {{ title: 'S₀ (Needlet Sparsity Scale 0)', desc: 'L1/L2 sparsity of needlet coefficients at coarsest scale. Smaller = sparser (few dominant directions).', range: '[1/K₀, 1]' }},
-            'sparsity_needlet_scale1': {{ title: 'S₁ (Needlet Sparsity Scale 1)', desc: 'L1/L2 sparsity at intermediate scale. Smaller = sparser.', range: '[1/K₁, 1]' }},
-            'sparsity_needlet_scale2': {{ title: 'S₂ (Needlet Sparsity Scale 2)', desc: 'L1/L2 sparsity at finest scale. Smaller = sparser.', range: '[1/K₂, 1]' }},
-            'sparsity_needlet_scale0_fa02': {{ title: 'S₀ Sparsity FA>0.2', desc: 'Needlet sparsity at coarsest scale, masked to white matter (FA > 0.2).', range: '[1/K₀, 1]' }},
-            'sparsity_needlet_scale1_fa02': {{ title: 'S₁ Sparsity FA>0.2', desc: 'Needlet sparsity at intermediate scale, masked to white matter (FA > 0.2).', range: '[1/K₁, 1]' }},
-            'sparsity_needlet_scale2_fa02': {{ title: 'S₂ Sparsity FA>0.2', desc: 'Needlet sparsity at finest scale, masked to white matter (FA > 0.2).', range: '[1/K₂, 1]' }},
-            'scale_energy_ratio0': {{ title: 'p₀ Scale Energy Fraction (Coarse)', desc: 'Proportion of total needlet energy at coarsest scale. High = smooth, low-frequency structure (single fiber).', formula: 'p₀ = E₀/(E₀+E₁+E₂)', range: '[0, 1]' }},
-            'scale_energy_ratio1': {{ title: 'p₁ Scale Energy Fraction (Mid)', desc: 'Proportion of total needlet energy at intermediate scale. High = moderate angular detail (fanning, bending).', formula: 'p₁ = E₁/(E₀+E₁+E₂)', range: '[0, 1]' }},
-            'scale_energy_ratio2': {{ title: 'p₂ Scale Energy Fraction (Fine)', desc: 'Proportion of total needlet energy at finest scale. High = sharp angular features (crossings, noise).', formula: 'p₂ = E₂/(E₀+E₁+E₂)', range: '[0, 1]' }},
 
             // Direction-domain Entropy
             'a_h': {{ title: 'A_H (Angular Entropy Anisotropy)', desc: 'Entropy-based anisotropy, inverted so high=anisotropic like FA. Measures deviation from uniform diffusion. Information-theoretic alternative to FA.', range: '[0, 1]' }},
@@ -16805,14 +16335,6 @@ HTML_INTERFACE = """
                         <span>Required for SH metrics (R_aniso, H_SH, CDCI, etc.) - moderate compute time</span>
                     </div>
                 </div>
-
-                <div class="inline-checkbox" style="margin-top: 8px;">
-                    <input type="checkbox" id="precomputeNeedlet" name="precompute_needlet">
-                    <div>
-                        <label for="precomputeNeedlet">Needlet Coefficients</label>
-                        <span>Required for needlet metrics (H_W, H_scale, etc.) - requires SH coefficients</span>
-                    </div>
-                </div>
             </div>
 
             <div style="margin-top: 24px; display: flex; gap: 12px; flex-wrap: wrap;">
@@ -17597,7 +17119,6 @@ HTML_INTERFACE = """
             const precomputeDTI = document.getElementById('precomputeDTI').checked;
             const precomputeModelFree = document.getElementById('precomputeModelFree').checked;
             const precomputeSH = document.getElementById('precomputeSH').checked;
-            const precomputeNeedlet = document.getElementById('precomputeNeedlet').checked;
 
             // Remove any existing values and set explicit values
             formData.delete('skull_stripping_method');
@@ -17606,7 +17127,6 @@ HTML_INTERFACE = """
             formData.delete('precompute_dti');
             formData.delete('precompute_model_free');
             formData.delete('precompute_sh');
-            formData.delete('precompute_needlet');
 
             formData.append('skull_stripping_method', skullStrippingMethod);
             formData.append('run_eddy', runEddy ? 'true' : 'false');
@@ -17614,7 +17134,6 @@ HTML_INTERFACE = """
             formData.append('precompute_dti', precomputeDTI ? 'true' : 'false');
             formData.append('precompute_model_free', precomputeModelFree ? 'true' : 'false');
             formData.append('precompute_sh', precomputeSH ? 'true' : 'false');
-            formData.append('precompute_needlet', precomputeNeedlet ? 'true' : 'false');
 
             // Convert empty string to null for selected_bval
             const selectedBvalValue = formData.get('selected_bval');
@@ -19607,13 +19126,6 @@ async def compute_metric(
                         "entropy_gap", "a_h", "h_dev", "cdci_d",  # Paper metrics from directional diffusivities
                         "ang_grad_mean", "ang_grad_max",
                         "h_aniso", "h_a", "h_sh", "cdci", "cdci_norm", "ac", "ell_eff_aniso", "gamma_sh",
-                        "h_w", "h_scale", "pr_scale", "h_pos_avg", "h_pos_scale0", "h_pos_scale1", "h_pos_scale2",  # Needlet metrics
-                        "gamma_avg", "gamma_avg_fa02", "gamma_scale0", "gamma_scale1", "gamma_scale2",
-                        "gamma2_avg", "gamma2_avg_fa02", "gamma2_scale0", "gamma2_scale1", "gamma2_scale2",
-                        "pr_pos_avg", "pr_pos_scale0", "pr_pos_scale1", "pr_pos_scale2",
-                        "sparsity_needlet_scale0", "sparsity_needlet_scale1", "sparsity_needlet_scale2",
-                        "sparsity_needlet_scale0_fa02", "sparsity_needlet_scale1_fa02", "sparsity_needlet_scale2_fa02",
-                        "scale_energy_ratio0", "scale_energy_ratio1", "scale_energy_ratio2",
                         "j_ln", "j_gap", "j_huber", "j_pseudo_huber", "j_log_huber", "j_log_pseudo_huber", "j_quad", "j_multishell"]:
             # These metrics require raw DWI data and can't be computed from eigenvalues alone
             try:
@@ -20243,197 +19755,6 @@ async def compute_metric(
 
                 metric_data = gamma_sh * mask
                 metric_name = "Gamma_SH"
-
-            elif metric in ["h_w", "h_scale", "pr_scale", "h_pos_avg", "h_pos_scale0", "h_pos_scale1", "h_pos_scale2",
-                            "gamma_avg", "gamma_avg_fa02", "gamma_scale0", "gamma_scale1", "gamma_scale2",
-                            "gamma2_avg", "gamma2_avg_fa02", "gamma2_scale0", "gamma2_scale1", "gamma2_scale2",
-                            "pr_pos_avg", "pr_pos_scale0", "pr_pos_scale1", "pr_pos_scale2",
-                            "sparsity_needlet_scale0", "sparsity_needlet_scale1", "sparsity_needlet_scale2",
-                            "sparsity_needlet_scale0_fa02", "sparsity_needlet_scale1_fa02", "sparsity_needlet_scale2_fa02",
-                            "scale_energy_ratio0", "scale_energy_ratio1", "scale_energy_ratio2"]:
-                # Needlet-based metrics: scale entropy, participation ratios, and positional coherence
-                # Paper decomposition.tex Section 4
-                # Use shell-filtered data for SH decomposition to avoid multi-shell bias
-                sh_coeffs_path = processed_dir / "sh_coeffs_order6.nii.gz"
-                if sh_coeffs_path.exists() and b_value is None:
-                    sh_coeffs_img = nib.load(sh_coeffs_path)
-                    sh_coeffs = sh_coeffs_img.get_fdata()
-                else:
-                    sh_coeffs, n_coeffs = compute_spherical_harmonics_decomposition(
-                        dwi_shell, bvals_shell, bvecs_shell, mask, sh_order=6
-                    )
-                    # Only cache if using default shell (no specific b_value requested)
-                    if b_value is None:
-                        sh_img = nib.Nifti1Image(sh_coeffs.astype(np.float32), dwi_img.affine, dwi_img.header)
-                        nib.save(sh_img, sh_coeffs_path)
-                        logging.info(f"Cached SH coefficients to {sh_coeffs_path}")
-
-                # Check for cached needlet coefficients
-                needlet_scale0_path = processed_dir / "needlet_coeffs_scale0.nii.gz"
-                needlet_scale1_path = processed_dir / "needlet_coeffs_scale1.nii.gz"
-                needlet_scale2_path = processed_dir / "needlet_coeffs_scale2.nii.gz"
-
-                if (needlet_scale0_path.exists() and needlet_scale1_path.exists() and
-                    needlet_scale2_path.exists() and b_value is None):
-                    # Load cached needlet coefficients
-                    logging.info(f"Loading cached needlet coefficients for metric: {metric}")
-                    needlet_coeffs = []
-                    n_points_list = []
-                    for scale_path in [needlet_scale0_path, needlet_scale1_path, needlet_scale2_path]:
-                        coeffs_img = nib.load(scale_path)
-                        coeffs_data = coeffs_img.get_fdata()
-                        needlet_coeffs.append(coeffs_data)
-                        n_points_list.append(coeffs_data.shape[-1])
-                else:
-                    # Compute needlet coefficients (this is computationally intensive)
-                    logging.info(f"Computing needlet decomposition for metric: {metric}")
-                    needlet_coeffs, n_points_list = compute_needlet_coefficients(sh_coeffs, sh_order=6, B=2.0, n_scales=3)
-
-                    # Save needlet coefficients for future use (only for all-shell default)
-                    if b_value is None:
-                        logging.info("Saving needlet coefficients to disk")
-                        for j, (coeffs_j, path) in enumerate(zip(needlet_coeffs,
-                                                                   [needlet_scale0_path, needlet_scale1_path, needlet_scale2_path])):
-                            coeffs_img = nib.Nifti1Image(coeffs_j.astype(np.float32), sh_coeffs_img.affine)
-                            nib.save(coeffs_img, path)
-
-                # Compute needlet entropy metrics
-                needlet_metrics = compute_needlet_entropy_metrics(needlet_coeffs, n_points_list, mask=mask)
-
-                if metric == "h_w":
-                    metric_data = needlet_metrics['H_W']
-                    metric_name = "H_W"
-                elif metric == "h_scale":
-                    metric_data = needlet_metrics['H_scale']
-                    metric_name = "H_scale"
-                elif metric == "pr_scale":
-                    metric_data = needlet_metrics['PR_scale']
-                    metric_name = "PR_scale"
-                elif metric == "h_pos_avg":
-                    metric_data = needlet_metrics['H_pos_avg']
-                    metric_name = "H_pos_avg"
-                elif metric == "h_pos_scale0":
-                    metric_data = needlet_metrics['H_pos_scales'][0]
-                    metric_name = "H_pos_scale_0"
-                elif metric == "h_pos_scale1":
-                    metric_data = needlet_metrics['H_pos_scales'][1]
-                    metric_name = "H_pos_scale_1"
-                elif metric == "h_pos_scale2":
-                    metric_data = needlet_metrics['H_pos_scales'][2]
-                    metric_name = "H_pos_scale_2"
-                elif metric == "gamma_avg":
-                    metric_data = needlet_metrics['gamma_avg']
-                    metric_name = "Gamma_avg"
-                elif metric == "gamma_avg_fa02":
-                    # Gamma_avg masked to voxels with FA > 0.2 (white matter)
-                    gamma_data = needlet_metrics['gamma_avg']
-                    # Load FA map
-                    fa_path = processed_dir / "fa.nii.gz"
-                    if fa_path.exists():
-                        fa_data = nib.load(fa_path).get_fdata()
-                    else:
-                        # Compute FA from eigenvalues
-                        evals_path = processed_dir / "dti_eigenvalues.nii.gz"
-                        if not evals_path.exists():
-                            raise HTTPException(status_code=404, detail="No FA or eigenvalue data found for FA masking")
-                        ev = nib.load(evals_path).get_fdata()
-                        md_v = np.mean(ev, axis=-1)
-                        num = np.sqrt(np.sum((ev - md_v[..., np.newaxis])**2, axis=-1))
-                        den = np.sqrt(np.sum(ev**2, axis=-1))
-                        fa_data = np.sqrt(3.0/2.0) * np.divide(num, den, out=np.zeros_like(num), where=den != 0)
-                        fa_data = np.clip(fa_data, 0, 1)
-                    fa_mask = (fa_data > 0.2).astype(np.float32)
-                    metric_data = gamma_data * fa_mask
-                    metric_name = "Gamma_avg_FA02"
-                elif metric == "gamma_scale0":
-                    metric_data = needlet_metrics['gamma_scales'][0]
-                    metric_name = "Gamma_scale_0"
-                elif metric == "gamma_scale1":
-                    metric_data = needlet_metrics['gamma_scales'][1]
-                    metric_name = "Gamma_scale_1"
-                elif metric == "gamma_scale2":
-                    metric_data = needlet_metrics['gamma_scales'][2]
-                    metric_name = "Gamma_scale_2"
-                elif metric == "gamma2_avg":
-                    metric_data = needlet_metrics['gamma2_avg']
-                    metric_name = "Gamma2_avg"
-                elif metric == "gamma2_avg_fa02":
-                    # Gamma2_avg masked to voxels with FA > 0.2 (white matter)
-                    gamma2_data = needlet_metrics['gamma2_avg']
-                    fa_path = processed_dir / "fa.nii.gz"
-                    if fa_path.exists():
-                        fa_data = nib.load(fa_path).get_fdata()
-                    else:
-                        evals_path = processed_dir / "dti_eigenvalues.nii.gz"
-                        if not evals_path.exists():
-                            raise HTTPException(status_code=404, detail="No FA or eigenvalue data found for FA masking")
-                        ev = nib.load(evals_path).get_fdata()
-                        md_v = np.mean(ev, axis=-1)
-                        num = np.sqrt(np.sum((ev - md_v[..., np.newaxis])**2, axis=-1))
-                        den = np.sqrt(np.sum(ev**2, axis=-1))
-                        fa_data = np.sqrt(3.0/2.0) * np.divide(num, den, out=np.zeros_like(num), where=den != 0)
-                        fa_data = np.clip(fa_data, 0, 1)
-                    fa_mask = (fa_data > 0.2).astype(np.float32)
-                    metric_data = gamma2_data * fa_mask
-                    metric_name = "Gamma2_avg_FA02"
-                elif metric == "gamma2_scale0":
-                    metric_data = needlet_metrics['gamma2_scales'][0]
-                    metric_name = "Gamma2_scale_0"
-                elif metric == "gamma2_scale1":
-                    metric_data = needlet_metrics['gamma2_scales'][1]
-                    metric_name = "Gamma2_scale_1"
-                elif metric == "gamma2_scale2":
-                    metric_data = needlet_metrics['gamma2_scales'][2]
-                    metric_name = "Gamma2_scale_2"
-                elif metric == "pr_pos_avg":
-                    metric_data = needlet_metrics['PR_pos_avg']
-                    metric_name = "PR_pos_avg"
-                elif metric == "pr_pos_scale0":
-                    metric_data = needlet_metrics['PR_pos_scales'][0]
-                    metric_name = "PR_pos_scale_0"
-                elif metric == "pr_pos_scale1":
-                    metric_data = needlet_metrics['PR_pos_scales'][1]
-                    metric_name = "PR_pos_scale_1"
-                elif metric == "pr_pos_scale2":
-                    metric_data = needlet_metrics['PR_pos_scales'][2]
-                    metric_name = "PR_pos_scale_2"
-                elif metric == "sparsity_needlet_scale0":
-                    metric_data = needlet_metrics['sparsity_scales'][0]
-                    metric_name = "Sparsity_needlet_scale_0"
-                elif metric == "sparsity_needlet_scale1":
-                    metric_data = needlet_metrics['sparsity_scales'][1]
-                    metric_name = "Sparsity_needlet_scale_1"
-                elif metric == "sparsity_needlet_scale2":
-                    metric_data = needlet_metrics['sparsity_scales'][2]
-                    metric_name = "Sparsity_needlet_scale_2"
-                elif metric in ["sparsity_needlet_scale0_fa02", "sparsity_needlet_scale1_fa02", "sparsity_needlet_scale2_fa02"]:
-                    scale_idx = int(metric.split("scale")[1][0])
-                    sparsity_data = needlet_metrics['sparsity_scales'][scale_idx]
-                    fa_path = processed_dir / "fa.nii.gz"
-                    if fa_path.exists():
-                        fa_data = nib.load(fa_path).get_fdata()
-                    else:
-                        evals_path = processed_dir / "dti_eigenvalues.nii.gz"
-                        if not evals_path.exists():
-                            raise HTTPException(status_code=404, detail="No FA or eigenvalue data found for FA masking")
-                        ev = nib.load(evals_path).get_fdata()
-                        md_v = np.mean(ev, axis=-1)
-                        num = np.sqrt(np.sum((ev - md_v[..., np.newaxis])**2, axis=-1))
-                        den = np.sqrt(np.sum(ev**2, axis=-1))
-                        fa_data = np.sqrt(3.0/2.0) * np.divide(num, den, out=np.zeros_like(num), where=den != 0)
-                        fa_data = np.clip(fa_data, 0, 1)
-                    fa_mask = (fa_data > 0.2).astype(np.float32)
-                    metric_data = sparsity_data * fa_mask
-                    metric_name = f"Sparsity_needlet_scale_{scale_idx}_FA02"
-                elif metric == "scale_energy_ratio0":
-                    metric_data = needlet_metrics['p_scales'][0]
-                    metric_name = "Scale_energy_ratio_0"
-                elif metric == "scale_energy_ratio1":
-                    metric_data = needlet_metrics['p_scales'][1]
-                    metric_name = "Scale_energy_ratio_1"
-                elif metric == "scale_energy_ratio2":
-                    metric_data = needlet_metrics['p_scales'][2]
-                    metric_name = "Scale_energy_ratio_2"
 
             elif metric in ["j_ln", "j_gap"]:
                 # J_ln: Logarithmic Jensen Gap (Paper Eq. 10)
