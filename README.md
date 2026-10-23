@@ -22,8 +22,28 @@ tensor and two ROI masks (SCR/projection and SLF/association):
 Neither is exercised by the synthetic test below, which runs the command-line
 variants on data with no template.
 
-The last column is the point of the package, and it is checked rather
-than claimed — see [Rotation invariance](#rotation-invariance) below.
+The last column is checked rather than claimed. See
+[Rotation invariance](#rotation-invariance) below.
+
+### Names used in the paper
+
+The accompanying paper reports five of these indices under different
+names. The key in brackets is the field in the command-line output.
+
+| Paper            | Here                      |
+| ---------------- | ------------------------- |
+| Classic index    | Classic (`classic`)       |
+| Refined index    | Cross (`cross`)           |
+| Measured axis    | Measured (`measured`)     |
+| λ2/λ3            | Voxelwise (`voxelwise`)   |
+| ALPS-PAS         | ALPS-PAS (`alps_pas`)     |
+
+Per-voxel, Refined+ and Anatomical come from earlier versions of the
+paper and are not reported in the current one. The paper also reports
+template reorientation and LD-ALPS, which are not part of this package.
+Template reorientation is in the paper's analysis scripts at
+<https://github.com/snhwang/paper-DTI-correction-code>. LD-ALPS is run
+from its authors' own code (see [Reproducing the paper](#reproducing-the-paper)).
 
 There are two ways in. The **command line** (`alps.py`, `place_rois.py`)
 is batch-friendly, has no Node dependency, and is what you want for a
@@ -76,6 +96,12 @@ over that range, ALPS-PAS by a few percent, and Cross, Per-voxel,
 Measured and Voxelwise are constant to machine precision (10⁻¹⁶).
 
 ### Reproducing the paper
+
+The paper's main finding is that head pitch covaries with age in
+obliquely acquired data, which biases the classic index.
+`reproduce/head_pose.py` makes the two measurements behind it. It
+recovers head pose from a subject-to-template affine, and it reads the
+operator's slice prescription from the image header.
 
 `reproduce/` holds the analyses behind the accompanying paper, including
 `compare_ld_alps.py`, which runs the variants here beside LD-ALPS (Burles

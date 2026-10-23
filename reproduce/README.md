@@ -51,10 +51,10 @@ and by more than 80 at 40, while the dyadic estimate does not move at all.
 | `denominator_contamination.py` | the same contamination measured on your own tensors, for classic, template reorientation, the cross product and the anatomical axis | eigenvalues, eigenvectors, ROIs, and a subject-to-template matrix |
 | `compare_ld_alps.py` | every variant here beside LD-ALPS, run from the authors' own implementation | the above plus the 4D DWI, rotated bvecs, bvals, and their `ld-alps.py` |
 
-Both cohorts whose results can be redistributed are public:
-
-* Dallas Lifespan Brain Study, OpenNeuro `ds004856`
-* the trigeminal neuralgia cohort, OpenNeuro `ds005713`
+The paper's public cohort is the Dallas Lifespan Brain Study, OpenNeuro
+`ds004856`. Its other cohort, HCP-Aging, is distributed under the AABC Data
+Use Terms and cannot be redistributed. The trigeminal neuralgia cohort,
+OpenNeuro `ds005713`, was used in an earlier version of the paper.
 
 ```bash
 # the operator's slab angulation, straight from the image header

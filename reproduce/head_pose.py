@@ -18,17 +18,15 @@ measuring head pose, and there are two independent ways to do it.
                 about the brain can change it, which is what makes it a control
                 on the first measure.
 
-In the DLBS cohort the two agree at r = -0.223 and each tracks age at about the
-same magnitude, -0.342 for the prescription and +0.340 for the affine. The
-opposite sign is interpretable: the operator angulated the slab further for
-older participants, which is what one does when the head is pitched back, so the
-affine measure sees only the residual after that compensation and understates
-the true tilt. Their difference correlates with age at +0.428.
+In the paper's DLBS analysis, head pitch from the affine rises with age
+(r = +0.369) and the prescribed slab angle falls with it (r = -0.361). The
+opposite sign suggests that operators angled the slab to follow the head. The
+paper's Section 4.1 gives the details.
 
-Both cohorts used in the paper are subject to data use terms. DLBS is public on
-OpenNeuro as ds004856 and the trigeminal cohort as ds005713, so both of these
-measurements can be reproduced from public data. HCP-Aging cannot be
-redistributed, and no identifier from it appears in this repository.
+DLBS is public on OpenNeuro as ds004856, so both measurements can be reproduced
+from public data. The paper's other cohort, HCP-Aging, is distributed under the
+AABC Data Use Terms. It cannot be redistributed, and no identifier from it
+appears in this repository.
 
 Usage:
     python reproduce/head_pose.py --prescription sub-01_dwi.nii.gz
